@@ -1,0 +1,100 @@
+name: Costruisci Aula Digitale
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: costruisci
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Scarica i file del repository
+        uses: actions/checkout@v4
+
+      - name: Estrai il progetto
+        run: |
+          if [ ! -f progetto.zip ]; then echo "ERRORE: manca progetto.zip nel repository"; exit 1; fi
+          if [ ! -f firebase-config.txt ]; then echo "ERRORE: manca firebase-config.txt nel repository"; exit 1; fi
+          mkdir build && unzip -q progetto.zip -d build
+          cp firebase-config.txt build/firebase-config.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Configurazione Firebase
+        working-directory: build
+        run: node tools/make-config.js
+
+      - name: Installa Capacitor
+        working-directory: build
+        run: npm install --no-audit --no-fund
+
+      - name: Crea il progetto Android
+        working-directory: build
+        run: |
+          npx cap add android
+          node tools/patch-android.js
+
+      - name: Icona dell'app
+        working-directory: build
+        continue-on-error: true
+        run: npx capacitor-assets generate --android --iconBackgroundColor '#1E5A47' --iconBackgroundColorDark '#1E5A47'
+
+      - name: Sincronizza
+        working-directory: build
+        run: npx cap sync android
+
+      - name: Compila l'APK
+        working-directory: build
+        run: |
+          mkdir -p ~/.android && cp tools/debug.keystore ~/.android/debug.keystore
+          cd android && chmod +x gradlew && ./gradlew assembleDebug --no-daemon
+          cp app/build/outputs/apk/debug/app-debug.apk ../../AulaDigitale.apk
+
+      - name: Salva l'APK tra i file della compilazione
+        uses: actions/upload-artifact@v4
+        with:
+          name: AulaDigitale-apk
+          path: AulaDigitale.apk
+
+      - name: Pubblica l'APK da scaricare (sezione Releases)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: app-${{ github.run_number }}
+          name: Aula Digitale – versione ${{ github.run_number }}
+          body: Scarica il file AulaDigitale.apk qui sotto e aprilo sul telefono Android per installarlo.
+          files: AulaDigitale.apk
+          make_latest: true
+
+      - name: Prepara la versione web (per iPhone)
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/www
+
+  web:
+    needs: apk
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Pubblica la versione web su GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
